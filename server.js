@@ -1,3 +1,91 @@
+let content = (function (){
+  const url = 'http://thesetupmarket.com';
+
+  let gotTime = -1;
+  let loading = false;
+  let callbacks = [];
+  let cache = null;
+
+  function load(){
+    if (loading) return;
+
+    console.log('Updating data…');
+
+    function result(error, data){ 
+      if (data != null){
+        if (data.gzip){
+          cache = data;
+        } else {
+          cache = {
+            uncompressed: data,
+            gzip: zlib.gzipSync(data)
+          };
+        }
+
+        gotTime = Date.now();
+        console.log('Data loaded');
+      } else {
+        console.log('Error: ' + error);
+      }
+
+      for (var c of callbacks){
+        c(error, cache);
+      }
+
+      callbacks.length = 0;
+      loading = false;
+    }
+
+    loading = true;
+    http.get({
+      host: 'thesetupmarket.com',
+      path: '/api/get-setups/Assetto%20Corsa',
+      headers: {
+        'User-Agent': 'Content Manager Caching Server',
+        'X-Comment': 'Sorry for overload! Hopefully, now it will work better',
+        'Accept-Encoding' : 'gzip,deflate',
+      }
+    }, function (res) {
+      var chunks = [];
+      res.on('data', d => chunks.push(d));
+      res.on('end', () => {
+        var buffer = Buffer.concat(chunks);
+        var encoding = res.headers['content-encoding'];
+        console.log('Encoding: ' + encoding);
+
+        if (encoding == 'gzip') {
+          zlib.gunzip(buffer, function(err, decoded) {
+            result(err, {
+              gzip: buffer,
+              uncompressed: decoded && decoded.toString()
+            });
+          });
+        } else if (encoding == 'deflate') {
+          zlib.inflate(buffer, function(err, decoded) {
+            result(err, decoded && decoded.toString());
+          });
+        } else {
+          result(null, body);
+        }
+      });
+
+      res.on('error', e => result(e, null));
+    }).on('error', e => result(e, null));
+  }
+
+  return {
+    get: function (callback){
+      var now = Date.now();
+      if (now - gotTime > 60 * 60e3 || cache == null){
+        callbacks.push(callback);
+        load();
+      } else {
+        callback(null, cache);
+      }
+    }
+  };
+})();
+
 //  OpenShift sample Node application
 var express = require('express'),
     app     = express(),
@@ -72,6 +160,24 @@ app.get('/', function (req, res) {
   } else {
     res.render('index.html', { pageCountMessage : null});
   }
+});
+
+app.get('/setups', function (req, res) {
+  res.set('Content-Type', 'application/json');
+  res.set('Cache-Control', 'no-cache, no-store');
+
+  content.get((error, data) => {
+    if (error){
+      res.send(JSON.stringify({ error: error }));
+    } else {
+      if (/gzip/i.test(req.headers['accept-encoding'] || '')){
+        res.set('Content-Encoding', 'gzip');
+        res.send(data.gzip);
+      } else {
+        res.send(data.uncompressed);
+      }
+    }
+  });
 });
 
 app.get('/pagecount', function (req, res) {
